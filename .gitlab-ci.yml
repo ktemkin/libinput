@@ -97,47 +97,23 @@ variables:
 #                                                               #
 #################################################################
 
-# we need a minimalist image capable of skopeo, curl, jq, date and
-# test. Instead of using a full fedora and install the dependencies,
-# we can build an alpine container through buildah with the following
-# script:
-# -----
-# #!/bin/bash
-#
-# # build container
-#
-# buildcntr1=$(buildah from golang:alpine)
-# buildmnt1=$(buildah mount $buildcntr1)
-#
-# buildah run $buildcntr1 apk add --update \
-#                                 --no-cache \
-#                                 --repository http://dl-3.alpinelinux.org/alpine/edge/testing/ \
-#                                 --allow-untrusted \
-#                                 git make gcc musl-dev glib-dev ostree-dev \
-#                                 gpgme-dev linux-headers btrfs-progs-dev \
-#                                 libselinux-dev lvm2-dev
-# buildah run $buildcntr1 git clone https://github.com/projectatomic/skopeo.git /go/src/skopeo
-# buildah config --workingdir /go/src/skopeo $buildcntr1
-# buildah run $buildcntr1 go get -d -v ./...
-# buildah run $buildcntr1 make binary-local
-#
-#
-# buildcntr2=$(buildah from alpine:latest)
-# buildmnt2=$(buildah mount $buildcntr2)
-# buildah run $buildcntr2 apk add --update \
-#                                 --no-cache \
-#                                 --repository http://dl-3.alpinelinux.org/alpine/edge/testing/ \
-#                                 --allow-untrusted \
-#                                 jq curl glib gpgme ostree lvm2 libselinux
-# cp $buildmnt1/go/src/skopeo/skopeo $buildmnt2/usr/bin/skopeo
-#
-# buildah unmount $buildcntr2
-# buildah commit $buildcntr2 docker://registry.freedesktop.org/libinput/libinput/skopeo:latest
-#
-# #clean up build
-#
-# buildah rm $buildcntr1 $buildcntr2
-# -----
+# we need a minimalist image capable of buildah, podman, skopeo, curl,
+# jq, date and test. Instead of using a full fedora and install the
+# dependencies, we can build an alpine container through buildah with
+# the script at `ci/bootstrap.sh`
+bootstrap: &bootstrap
+  stage: docker_check
+  when: manual
+  image: registry.freedesktop.org/libinput/libinput/containers:latest
+  script:
+    - podman login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - bash ci/bootstrap.sh
+    - podman images
+    - podman push --quiet registry.freedesktop.org/libinput/libinput/containers:latest
+    # add an extra tag to the docker registry:
+    - skopeo copy docker://registry.freedesktop.org/libinput/libinput/containers:latest docker://registry.freedesktop.org/libinput/libinput/containers:$CI_JOB_ID
+  <<: *restrict_docker_creation
+
 .docker-check: &docker_check
   stage: docker_check
   image: registry.freedesktop.org/libinput/libinput/skopeo:latest
@@ -223,27 +199,27 @@ freebsd:11.2@docker-check:
 #
 .fedora@docker-prep: &fedora_docker_prep
   stage: docker_prep
-  image: docker:stable
-  services:
-    - docker:dind
+  image: registry.freedesktop.org/libinput/libinput/containers:latest
   script:
     # if the check was successful, we just skip recreating the docker image
     - test -e .img_ready && exit 0
 
-    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - podman login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
 
     # create a Dockerfile with our dependencies
-    - echo "FROM fedora:$FEDORA_VERSION" > Dockerfile
-    - echo "WORKDIR /app" >> Dockerfile
-    - echo "RUN dnf upgrade -y ; dnf clean all" >> Dockerfile
-    - echo "RUN dnf install -y $FEDORA_RPMS ; dnf clean all" >> Dockerfile
-
-    # create the docker image
-    - docker build --tag $FEDORA_DOCKER_IMAGE:latest --tag $FEDORA_DOCKER_IMAGE:$CI_JOB_ID .
+    - buildcntr=$(buildah from --quiet fedora:$FEDORA_VERSION)
+    - buildah run $buildcntr dnf upgrade -y
+    - buildah run $buildcntr dnf install -y $FEDORA_RPMS
+    - buildah run $buildcntr dnf clean all
+    - buildah config --workingdir /app $buildcntr
+    # tag the current container
+    - buildah commit --quiet $buildcntr $FEDORA_DOCKER_IMAGE:latest
+    # clean up the working container
+    - buildah rm $buildcntr
 
     # push the docker image to the libinput registry
-    - docker push $FEDORA_DOCKER_IMAGE:latest
-    - docker push $FEDORA_DOCKER_IMAGE:$CI_JOB_ID
+    - podman push --quiet $FEDORA_DOCKER_IMAGE:latest
+    - skopeo copy docker://$FEDORA_DOCKER_IMAGE:latest docker://$FEDORA_DOCKER_IMAGE:$CI_JOB_ID
   <<: *restrict_docker_creation
 
 fedora:28@docker-prep:
@@ -487,6 +463,12 @@ freebsd:11.2@force-docker-prep:
   dependencies: []
   allow_failure: true
   <<: *restrict_docker_creation
+
+bootstrap@docker-clean:
+  variables:
+    GIT_STRATEGY: none
+    CURRENT_DOCKER_IMAGE: registry.freedesktop.org/libinput/libinput/containers:latest
+  <<: *docker_clean
 
 fedora:28@docker-clean:
   variables:
