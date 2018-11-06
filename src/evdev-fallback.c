@@ -1158,6 +1158,19 @@ fallback_interface_remove(struct evdev_dispatch *evdev_dispatch)
 }
 
 static void
+fallback_interface_sync_tablet_mode(struct evdev_device *device) {
+	uint64_t time = libinput_now(evdev_libinput_context(device));
+
+    if (device->tags & EVDEV_TAG_TABLET_MODE_SWITCH) {
+        enum libinput_switch_state sw_state =
+			evdev_device_switch_get_state(device, LIBINPUT_SWITCH_TABLET_MODE);
+        switch_notify_toggle(&device->base, time,
+                LIBINPUT_SWITCH_TABLET_MODE, sw_state);
+    }
+
+}
+
+static void
 fallback_interface_sync_initial_state(struct evdev_device *device,
 				      struct evdev_dispatch *evdev_dispatch)
 {
@@ -1185,12 +1198,7 @@ fallback_interface_sync_initial_state(struct evdev_device *device,
 		}
 	}
 
-	if (dispatch->tablet_mode.sw.state) {
-		switch_notify_toggle(&device->base,
-				     time,
-				     LIBINPUT_SWITCH_TABLET_MODE,
-				     LIBINPUT_SWITCH_STATE_ON);
-	}
+	fallback_interface_sync_tablet_mode(device);
 }
 
 static void
@@ -1355,12 +1363,22 @@ fallback_keyboard_pair_tablet_mode(struct evdev_device *keyboard,
 	}
 }
 
+
 static void
 fallback_interface_device_added(struct evdev_device *device,
 				struct evdev_device *added_device)
 {
 	fallback_lid_pair_keyboard(device, added_device);
 	fallback_keyboard_pair_tablet_mode(device, added_device);
+}
+
+
+static void
+fallback_interface_device_resumed(struct evdev_device *device,
+				struct evdev_device *added_device)
+{
+	fallback_interface_device_added(device, added_device);
+	fallback_interface_sync_tablet_mode(added_device);
 }
 
 static void
@@ -1401,7 +1419,7 @@ struct evdev_dispatch_interface fallback_interface = {
 	.device_added = fallback_interface_device_added,
 	.device_removed = fallback_interface_device_removed,
 	.device_suspended = fallback_interface_device_removed, /* treat as remove */
-	.device_resumed = fallback_interface_device_added,   /* treat as add */
+	.device_resumed = fallback_interface_device_resumed,
 	.post_added = fallback_interface_sync_initial_state,
 	.toggle_touch = fallback_interface_toggle_touch,
 	.get_switch_state = fallback_interface_get_switch_state,
